@@ -53,6 +53,17 @@ public:
     bool write(uint8_t *buff, uint16_t len);
     bool print(const char *buff);
 
+    //Multi tcp:
+    bool connect(const char *host, uint16_t port, uint8_t index);
+    bool connected(uint8_t index);
+    int ipState(uint8_t index);
+    int connectionStateHandle(int check, uint8_t index);
+    int available(uint8_t index);
+    bool r_available(uint8_t index);
+    bool write(uint8_t *buff, uint16_t len, uint8_t index);
+    bool print(const char *buff, uint8_t index);
+    uint8_t read(uint8_t index);
+
 private:
     HardwareSerial *_uart;
     char ATReq[255], ATRsp[1024];
@@ -62,6 +73,9 @@ private:
 
     char rxBuffer[2048], TxBuffer[2048], *rxPtr;
     uint16_t rxLen;
+    // multi tcp
+    char tcp_rxBuff[2][2048], tcp_txBuff[2][2048], *tcp_rxPtr[2];
+    uint16_t tcp_rxLen[2];
 
     bool getSimPresent();
     const char* getSimServiceProvider();

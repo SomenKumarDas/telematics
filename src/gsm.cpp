@@ -32,6 +32,11 @@ bool QC::begin(HardwareSerial &uart)
     DEBUG_i("[SERVICE PROVIDER %s]", getSimServiceProvider());
     GSM_CHECK_ERR(AT_CheckReply("AT+QENG=1,1"))
     GSM_CHECK_ERR(AT_CheckReply("AT+QINDI=1"))
+    GSM_CHECK_ERR(AT_CheckReply("AT+QIFGCNT=0"))
+    GSM_CHECK_ERR(AT_CheckReply("AT+QICSGP=1"))
+    GSM_CHECK_ERR(AT_CheckReply("AT+QIMUX=1"))
+    GSM_CHECK_ERR(AT_CheckReply("AT+QIMODE=0"))
+    GSM_CHECK_ERR(AT_CheckReply("AT+QIDNSIP=0"))
     // GSM_CHECK_ERR(AT_CheckReply("AT+QGNSSC=1"))
     return true;
 }
@@ -154,6 +159,65 @@ bool QC::print(const char *buff)
     return write((uint8_t *)buff, strlen(buff));
 }
 
+// ------------------------------Multi TCP implementation ----------------------------------//
+
+bool QC::connect(const char *host, uint16_t port, uint8_t index)
+{
+    StartTimer(timOutTmr, MS_SEC(65));
+    while ((connectionStateHandle(IP_GPRSACT, index) != IP_GPRSACT))
+    {
+        IF(IsTimerElapsed(timOutTmr), return false;)
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    sprintf(ATReq, "AT+QIOPEN=%u,\"TCP\",\"%s\",%u", index, host, port);
+    GSM_CHECK_ERR(AT_CheckMultiReply(ATReq, "CONNECT OK", MS_SEC(10)));
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    return true;
+}
+
+bool QC::connected(uint8_t index)
+{
+    return (ipState(index) == CONNECT_OK);
+}
+
+int QC::available(uint8_t index)
+{
+    IF(tcp_rxLen[index], return tcp_rxLen[index];)
+    IF(!r_available(index), return 0;)
+    char *ptr;
+    PTR_CHECK_RET((ptr = strstr(tcp_rxBuff[index], "+QIRD:")), 0);
+    PTR_CHECK_RET((ptr = strtok(ptr, "\n")), 0);
+    PTR_CHECK_RET((ptr = strtok(NULL, "\n")), 0); // DEBUG_v("Data: [%u] [%s]", strlen(ptr), ptr);
+    tcp_rxLen[index] = strlen(ptr);
+    tcp_rxPtr[index] = ptr;
+    return tcp_rxLen[index];
+}
+
+bool QC::write(uint8_t *buff, uint16_t len, uint8_t index)
+{
+    GSM_CHECK_ERR(connected(index))
+    sprintf((char *)TxBuffer, "AT+QISEND=%u,%u", index,len);
+    GSM_CHECK_ERR(AT_WaitFor((char *)TxBuffer, "> ", 300))
+    GSM_CHECK_ERR(AT_CheckReply((char *)buff, "SEND OK"))
+    return true;
+}
+
+bool QC::print(const char *buff, uint8_t index)
+{
+    return write((uint8_t *)buff, strlen(buff), index);
+}
+
+uint8_t QC::read(uint8_t index)
+{
+    if (tcp_rxLen[index])
+    {
+        tcp_rxLen[index]--;
+        return *tcp_rxPtr[index]++;
+    }
+    return 0;
+}
+
+
 /***PRIVATE METHODS*****/
 /*------------------------------------------------------------------------------------------*/
 
@@ -203,6 +267,28 @@ int QC::ipState()
     return 0;
 }
 
+int QC::ipState(uint8_t index)
+{
+    GSM_CHECK_ERR(AT_WaitFor("AT+QISTATE", 15))
+
+    char *tok;
+    tok = strtok(ATRsp, "\n");
+    tok = strtok(NULL, "\n");
+    if (strstr(tok, "IP PROCESSING"))
+    {
+        for (int i = 0; i <= index; i++)
+        {
+            tok = strtok(NULL, "\r\n");
+        }
+    }
+    SEARCH_STR_RET(tok, "CONNECTED", CONNECT_OK);
+    SEARCH_STR_RET(tok, "INITIAL", IP_INITIAL);
+    SEARCH_STR_RET(tok, "START", IP_START);
+    SEARCH_STR_RET(tok, "GPRSACT", IP_GPRSACT);
+    SEARCH_STR_RET(tok, "PDP DEACT", PDP_DEACT);
+    return 0;
+}
+
 int QC::connectionStateHandle(int check)
 {
     int state = ipState();
@@ -213,7 +299,6 @@ int QC::connectionStateHandle(int check)
         GSM_CHECK_ERR(connectNetwork("www"))
         break;
 
-    
     case CONNECT_OK:
         GSM_CHECK_ERR(disconnect())
         break;
@@ -236,6 +321,34 @@ int QC::connectionStateHandle(int check)
     return state;
 }
 
+int QC::connectionStateHandle(int check, uint8_t index)
+{
+    int state = ipState(index);
+    IF((state == check), return state;)
+    switch (state)
+    {
+    case IP_INITIAL:
+        GSM_CHECK_ERR(AT_CheckReply("AT+QIREGAPP"))
+        GSM_CHECK_ERR(AT_CheckReply("AT+QIACT"))
+        break;
+
+    case IP_START:
+        GSM_CHECK_ERR(AT_CheckReply("AT+QIACT"))
+        break;
+
+    case PDP_DEACT:
+        GSM_CHECK_ERR(AT_CheckReply("AT+QIACT"))
+    break;
+
+    case IP_GPRSACT:
+        break;
+    default:
+        DEBUG_w("UNSTATE: %d", state);
+        break;
+    }
+    return state;
+}
+
 bool QC::isGPRS()
 {
     return modemQuaryVar("AT+QICSGP?", "+QICSGP");
@@ -253,7 +366,7 @@ int QC::modemQuaryVar(const char *cmd, const char *reply)
     return atoi(ptr);
 }
 
-bool QuectelCellular::r_available()
+bool QC::r_available()
 {
     uint32_t tmr = 0;
     uint8_t linesFound = 0;
@@ -276,6 +389,32 @@ bool QuectelCellular::r_available()
         }
     } while (IsTimerRunning(tmr) && (strstr(rxBuffer, "OK") == NULL));
     gsm_log_rsp(String(rxBuffer));
+    return ((IsTimerRunning(tmr) && linesFound >= 4)) ? true : false;
+}
+
+bool QC::r_available(uint8_t index)
+{
+    uint32_t tmr = 0;
+    uint8_t linesFound = 0;
+    uint16_t idx = 0;
+    sprintf(ATReq, "AT+QIRD=0,1,%u,1500", index);
+    AT_flush();
+    gsm_log_req(ATReq);
+    _uart->println(ATReq);
+    StartTimer(tmr, 1000);
+    do
+    {
+        vTaskDelay(pdMS_TO_TICKS(50));
+        while (_uart->available())
+        {
+            char c = _uart->read();
+            IF((c == '\r'), continue;)
+            IF((c == '\n'), linesFound++;)
+            tcp_rxBuff[index][idx++] = c;
+            tcp_rxBuff[index][idx] = 0;
+        }
+    } while (IsTimerRunning(tmr) && (strstr(tcp_rxBuff[index], "OK") == NULL));
+    gsm_log_rsp(String(tcp_rxBuff[index]));
     return ((IsTimerRunning(tmr) && linesFound >= 4)) ? true : false;
 }
 
