@@ -37,6 +37,7 @@ enum imu_evt{
     MainSuppDiscon
 };
 
+void test_task(void *args);
 void dev_core_task(void *args);
 void SendDiagnosticPacket(uint8_t *data, uint16_t len);
 

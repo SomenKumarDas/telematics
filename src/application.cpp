@@ -17,6 +17,40 @@ HealthPacket healthPack;
 EmrgncyPacket EmrPack;
 uint8_t DRxBuff[1500];
 
+void test_task(void *args)
+{
+    uint32_t tmr = 0;
+    STATUS_CHECK(telemSoc.begin(GSM_UART))
+    StartTimer(tmr, 2000);
+    for (;;)
+    {
+        if (telemSoc.connected(0))
+        {
+            DEBUG_i("CONNECTED");
+            if (telemSoc.available(0))
+            {
+                DEBUG_i("AVAILABLE");
+                while (telemSoc.available(0))
+                    Serial.write(telemSoc.read(0));
+
+                Serial.println();
+            }
+
+            if (telemSoc.print("$FXLPGO001-LIN,AUTOPEEPAL,WB00AB0000,867322034553800,0.0.1,AIS140,00.0000,N,00.0000,N*50", 0))
+            {
+                DEBUG_i("Sent");
+            }
+        }
+        else
+        {
+            DEBUG_i("DISCONNECTED");
+            telemSoc.connect("165.232.184.128", 8900, 0);
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    vTaskDelete(NULL);
+}
+
 void dev_core_task(void *args)
 {
     ais.Init();
