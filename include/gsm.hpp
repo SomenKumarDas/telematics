@@ -56,10 +56,8 @@ public:
     //Multi tcp:
     bool connect(const char *host, uint16_t port, uint8_t index);
     bool connected(uint8_t index);
-    int ipState(uint8_t index);
-    int connectionStateHandle(int check, uint8_t index);
+    bool disconnect(uint8_t index);
     int available(uint8_t index);
-    bool r_available(uint8_t index);
     bool write(uint8_t *buff, uint16_t len, uint8_t index);
     bool print(const char *buff, uint8_t index);
     uint8_t read(uint8_t index);
@@ -87,8 +85,11 @@ private:
     bool disconnectNetwork();
     bool isGPRS();
     int ipState();
+    int ipState(uint8_t index);
     int connectionStateHandle(int check);
+    int connectionStateHandle(int check, uint8_t index);
     bool r_available();
+    bool r_available(uint8_t index);
 
     int modemQuaryVar(const char *cmd, const char *reply);
     bool AT_CheckReply(const char *command, const char *reply = "OK", uint16_t timeout = 1000);

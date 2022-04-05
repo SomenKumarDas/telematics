@@ -77,6 +77,8 @@ uint8_t QC::getRSSI()
     return strtol(token, &ptr, 10);
 }
 
+// ------------------------------Single TCP implementation ----------------------------------//
+
 bool QC::connect(const char *host, uint16_t port)
 {
     StartTimer(timOutTmr, MS_SEC(65));
@@ -147,9 +149,8 @@ bool QC::write(uint8_t data)
 
 bool QC::write(uint8_t *buff, uint16_t len)
 {
-    GSM_CHECK_ERR(connected())
     sprintf((char *)TxBuffer, "AT+QISEND=%u", len);
-    GSM_CHECK_ERR(AT_WaitFor((char *)TxBuffer, "> ", 300))
+    GSM_CHECK_ERR(AT_WaitFor((char *)TxBuffer, "> "))
     GSM_CHECK_ERR(AT_CheckReply((char *)buff, "SEND OK"))
     return true;
 }
@@ -180,6 +181,16 @@ bool QC::connected(uint8_t index)
     return (ipState(index) == CONNECT_OK);
 }
 
+bool QC::disconnect(uint8_t index)
+{
+    if (ipState(index) == CONNECT_OK)
+    {
+        sprintf(ATRsp, "AT+QICLOSE=%u", index);
+        GSM_CHECK_ERR(AT_CheckReply(ATRsp, "CLOSE OK"));
+    }
+    return true;
+}
+
 int QC::available(uint8_t index)
 {
     IF(tcp_rxLen[index], return tcp_rxLen[index];)
@@ -195,7 +206,6 @@ int QC::available(uint8_t index)
 
 bool QC::write(uint8_t *buff, uint16_t len, uint8_t index)
 {
-    GSM_CHECK_ERR(connected(index))
     sprintf((char *)TxBuffer, "AT+QISEND=%u,%u", index,len);
     GSM_CHECK_ERR(AT_WaitFor((char *)TxBuffer, "> ", 300))
     GSM_CHECK_ERR(AT_CheckReply((char *)buff, "SEND OK"))
@@ -216,7 +226,6 @@ uint8_t QC::read(uint8_t index)
     }
     return 0;
 }
-
 
 /***PRIVATE METHODS*****/
 /*------------------------------------------------------------------------------------------*/
@@ -289,7 +298,7 @@ int QC::ipState(uint8_t index)
     return 0;
 }
 
-int QC::connectionStateHandle(int check)
+/*int QC::connectionStateHandle(int check)
 {
     int state = ipState();
     IF((state == check), return state;)
@@ -319,7 +328,7 @@ int QC::connectionStateHandle(int check)
     }
 
     return state;
-}
+}*/
 
 int QC::connectionStateHandle(int check, uint8_t index)
 {
@@ -328,12 +337,12 @@ int QC::connectionStateHandle(int check, uint8_t index)
     switch (state)
     {
     case IP_INITIAL:
-        GSM_CHECK_ERR(AT_CheckReply("AT+QIREGAPP"))
-        GSM_CHECK_ERR(AT_CheckReply("AT+QIACT"))
+        GSM_CHECK_ERR(AT_CheckMultiReply("AT+QIREGAPP", "OK", MS_SEC(5)))
+        GSM_CHECK_ERR(AT_CheckMultiReply("AT+QIACT", "OK", MS_SEC(10)))
         break;
 
     case IP_START:
-        GSM_CHECK_ERR(AT_CheckReply("AT+QIACT"))
+        GSM_CHECK_ERR(AT_CheckMultiReply("AT+QIACT", "OK", MS_SEC(10)))
         break;
 
     case PDP_DEACT:
