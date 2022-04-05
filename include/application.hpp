@@ -80,14 +80,12 @@ private:
     void periodicTransmit();
     void userModeDataProcess();
     
-
-    void telematicSrvConectionHandle();
-    void emergencySrvConectionHandle();
-
+    void srvConnectionHandler(uint8_t index);
     int SendResp(char *buf, int comCh);
     
     int SrvReply(String &str);
     int remoteDiag(uint8_t *data, uint16_t len);
+    
 
 public:
     String SrvData;

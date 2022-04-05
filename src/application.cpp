@@ -19,9 +19,9 @@ uint8_t DRxBuff[1500];
 
 void test_task(void *args)
 {
-    uint32_t tmr = 0;
+    // uint32_t tmr = 0;
+    // StartTimer(tmr, 2000);
     STATUS_CHECK(telemSoc.begin(GSM_UART))
-    StartTimer(tmr, 2000);
     for (;;)
     {
         if (telemSoc.connected(0))
@@ -36,7 +36,7 @@ void test_task(void *args)
                 Serial.println();
             }
 
-            if (telemSoc.print("$FXLPGO001-LIN,AUTOPEEPAL,WB00AB0000,867322034553800,0.0.1,AIS140,00.0000,N,00.0000,N*50", 0))
+            if (telemSoc.print("$FXLPGO001-LIN,AUTOPEEPAL,WB00AB0000,867322034553800,0.0.1,AIS140,00.0000,N,00.0000,N*50", srv_telematics))
             {
                 DEBUG_i("Sent");
             }
@@ -153,23 +153,26 @@ void AIS140::DataProcess(void)
 {
     if ((Access == USR))
     {
-        if (IsTimerEnabled(EmrPackTmr))
+        if (telemSoc.connected(srv_telematics))
         {
-            emergencySrvConectionHandle();
             userModeDataProcess();
-
-            if (IsTimerElapsed(EmrPackTmr))
-            {
-                ResetTimer(EmrPackTmr, 1000);
-                if (!telemSoc.print(EmrPack.Packetize()))
-                    DEBUG_w("EMR: Send Failed");
-            }
+            periodicTransmit();
         }
         else
         {
-            telematicSrvConectionHandle();
-            userModeDataProcess();
-            periodicTransmit();
+            srvConnectionHandler(srv_telematics);
+        }
+
+        if(IsTimerElapsed(EmrPackTmr))
+        {
+            if(telemSoc.connected(srv_emergency))
+            {
+                IF(!telemSoc.print(EmrPack.Packetize(), srv_emergency), DEBUG_e("EmrPack Send Failed!");)
+            }
+            else
+            {
+                srvConnectionHandler(srv_emergency);
+            }
         }
     }
 
@@ -212,7 +215,6 @@ void AIS140::ParseCommands(String &str, int comCh)
 
     if (str.indexOf("SEM") > 0)
     {
-        telemSoc.disconnect();
         StopTimer(EmrPackTmr);
         sprintf(buff, "#SEM#OK#");
         SendResp(buff, comCh);
@@ -1857,7 +1859,7 @@ void AIS140::testFunc()
 bool AIS140::devConfigInit()
 {
     dataStruct.Mem.begin(APP_CNF, true);
-    Access = dataStruct.Mem.getInt("ACCESS", APEOL);
+    Access = USR; // dataStruct.Mem.getInt("ACCESS", APEOL);
     wlan = dataStruct.Mem.getBool("wlan", false);
     dataStruct.Mem.end();
     dataStruct.DataStructInit();
@@ -1898,17 +1900,17 @@ bool AIS140::userModeinit()
 
 void AIS140::userModeDataProcess()
 {
-    if (telemSoc.available())
+    if (telemSoc.available(srv_telematics))
     {
-        char c = (char)telemSoc.read();
+        char c = (char)telemSoc.read(srv_telematics);
         if (c == '*')
         {
             SrvData = c;
             do
             {
-                c = (char)telemSoc.read();
+                c = (char)telemSoc.read(srv_telematics);
                 SrvData += c;
-            } while (telemSoc.available() && c != '#');
+            } while (telemSoc.available(srv_telematics) && c != '#');
             ParseCommands(SrvData, COM_GSM);
         }
         else if (c == '$')
@@ -1916,19 +1918,19 @@ void AIS140::userModeDataProcess()
             SrvData = c;
             do
             {
-                c = (char)telemSoc.read();
+                c = (char)telemSoc.read(srv_telematics);
                 SrvData += c;
-            } while (telemSoc.available() && c != '&');
+            } while (telemSoc.available(srv_telematics) && c != '&');
             SrvReply(SrvData);
         }
         else
         {
-            DEBUG_w("invalid Frame: [", telemSoc.available());
+            DEBUG_w("invalid Frame: [", telemSoc.available(srv_telematics));
             int x;
-            while ((x = telemSoc.available()) > 0)
+            while ((x = telemSoc.available(srv_telematics)) > 0)
             {
                 while (x--)
-                    Serial.print(((char)telemSoc.read()));
+                    Serial.print(((char)telemSoc.read(srv_telematics)));
             }
             Serial.println("]");
         }
@@ -1938,20 +1940,20 @@ void AIS140::userModeDataProcess()
 bool AIS140::srvLogin(const char *host, uint16_t port)
 {
     LogInPacket logPack;
-    if (telemSoc.connected())
+    if (telemSoc.connected(srv_telematics))
     {
-        STATUS_CHECK(telemSoc.disconnect())
+        STATUS_CHECK(telemSoc.disconnect(srv_telematics))
     }
-    STATUS_CHECK(telemSoc.connect(host, port))
-    STATUS_CHECK(telemSoc.print(logPack.Packetize()))
+    STATUS_CHECK(telemSoc.connect(host, port, srv_telematics))
+    STATUS_CHECK(telemSoc.print(logPack.Packetize(), srv_telematics))
     DEBUG_d("DEV: %s", logPack.Packetize());
 
     StartTimer(timOutTmr, 5000);
     do
     {
         vTaskDelay(pdMS_TO_TICKS(500));
-        while (telemSoc.available())
-            SrvData += (char)telemSoc.read();
+        while (telemSoc.available(srv_telematics))
+            SrvData += (char)telemSoc.read(srv_telematics);
         if ((SrvData.indexOf("login") > 0) || (SrvData.indexOf("ERROR") > 0))
             break;
     } while (IsTimerRunning(timOutTmr));
@@ -1967,102 +1969,41 @@ bool AIS140::srvLogin(const char *host, uint16_t port)
     return true;
 }
 
-void AIS140::telematicSrvConectionHandle()
-{
-    if (IsTimerElapsed(srvStateTmr))
-    {
-        ResetTimer(srvStateTmr, 5000);
-        if (!telemSoc.connected())
-        {
-            DEBUG_w("[SRV Connetion Lost: Retrying...]");
-            if (!srvLogin("165.232.184.128", 8900))
-            {
-                LoginFailCnt++;
-            }
-            else
-            {
-                DEBUG_i("[SRV Connetion Established!]");
-            }
-
-            if (LoginFailCnt == 12)
-            {
-                DEBUG_e("!!! [FETAL] [DEVICE RESTART]");
-                esp_restart();
-            }
-        }
-        else
-        {
-            LoginFailCnt = 0;
-        }
-    }
-}
-
-void AIS140::emergencySrvConectionHandle()
-{
-    if (IsTimerElapsed(srvStateTmr))
-    {
-        ResetTimer(srvStateTmr, 5000);
-        if (!telemSoc.connected())
-        {
-            DEBUG_w("[CONNECTING to EMR SRV]");
-            if (!telemSoc.connect("165.232.184.128", 8901))
-            {
-                LoginFailCnt++;
-                DEBUG_e("EMR SRV FAILED");
-            }
-            else
-            {
-                DEBUG_i("[SRV Connetion Established!]");
-            }
-
-            if (LoginFailCnt == 12)
-            {
-                DEBUG_e("!!! [FETAL] [DEVICE RESTART]");
-                esp_restart();
-            }
-        }
-        else
-        {
-            LoginFailCnt = 0;
-        }
-    }
-}
-
 void AIS140::periodicTransmit()
 {
     if (IsTimerElapsed(TrackPackTmr))
     {
-        ResetTimer(TrackPackTmr, 1000);
+        ResetTimer(TrackPackTmr, 2000);
         // updateGSM_Data();
         // updateGPS_Data();
         // updateIO_Data(); // debug_d("[TRK: %s]", trackPack.Packetize());
-        if (!telemSoc.print(trackPack.Packetize()))
+        if (!telemSoc.print(trackPack.Packetize(), srv_telematics))
         {
             if (trackPack.pushFrame())
                 DEBUG_w("[TRK] [pushFrame]");
         }
 
-        if (telemSoc.connected() && trackPack.avaiableFrame())
+        if (telemSoc.connected(srv_telematics) && trackPack.avaiableFrame())
         {
-            if (!telemSoc.print(trackPack.popFrame()))
+            if (!telemSoc.print(trackPack.popFrame(), srv_telematics))
                 DEBUG_w("[TRK] [Send]");
         }
     }
 
     if (IsTimerElapsed(HealthPackTmr) /*&& (dataStruct.AISData.HLTINT)*/)
     {
-        ResetTimer(HealthPackTmr, 1500); // dataStruct.AISData.HLTINT
+        ResetTimer(HealthPackTmr, 3000); // dataStruct.AISData.HLTINT
         // debug_d("[HLT: %s]", healthPack.Packetize());
 
-        if (!telemSoc.print(healthPack.Packetize()))
+        if (!telemSoc.print(healthPack.Packetize(), srv_telematics))
         {
             if (healthPack.pushFrame())
                 DEBUG_w("[HLT] [pushFrame]");
         }
 
-        if (telemSoc.connected() && healthPack.avaiableFrame())
+        if (telemSoc.connected(srv_telematics) && healthPack.avaiableFrame())
         {
-            if (!telemSoc.print(healthPack.popFrame()))
+            if (!telemSoc.print(healthPack.popFrame(), srv_telematics))
                 DEBUG_w("[HLT] [Send]");
         }
     }
@@ -2184,7 +2125,7 @@ void SendDiagnosticPacket(uint8_t *data, uint16_t len)
     {
         memcpy(&RDG_TXBuff[RDG_Idx], (void *)data, len);
         RDG_TXBuff[len + (RDG_Idx++)] = '#';
-        telemSoc.write(RDG_TXBuff, len + RDG_Idx);
+        telemSoc.write(RDG_TXBuff, len + RDG_Idx, srv_telematics);
 
         Serial.printf("DEV: ");
         for (int i = 0; i < (len + RDG_Idx); i++)
@@ -2213,7 +2154,7 @@ int AIS140::SendResp(char *buf, int comCh)
         break;
 
     case COM_GSM:
-        telemSoc.print(buf);
+        telemSoc.print(buf, srv_telematics);
         break;
 
     default:
@@ -2341,8 +2282,7 @@ void AIS140::updateIO_Data()
     if (digitalRead(DI_SOS))
     {
         DEBUG_i("SOS Pressed!!");
-        telemSoc.disconnect();
-        StartTimer(EmrPackTmr, 1000);
+        StartTimer(EmrPackTmr, 5000);
     }
 
     if (digitalRead(DI_IGN))
@@ -2400,3 +2340,47 @@ void AIS140::updateIMU_Data()
         sprintf(dataStruct.AISData.PKTYPE, "NR");
     }
 }
+
+//--------------------------------
+
+void AIS140::srvConnectionHandler(uint8_t index)
+{
+
+    if (index == srv_telematics)
+    {
+        DEBUG_w("[Telematics Connetion Lost: Retrying...]");
+        if (!telemSoc.connect(dataStruct.SRVData.IP1, dataStruct.SRVData.IP1P, srv_telematics))
+        {
+            LoginFailCnt++;
+        }
+        else
+        {
+            DEBUG_i("[Telematics Connetion Established!]");
+            LoginFailCnt = 0;
+        }
+        if (LoginFailCnt == 10)
+        {
+            DEBUG_e("!!! [FETAL] [Rebooting..]");
+            esp_restart();
+        }
+    }
+    else if(index == srv_emergency)
+    {
+        DEBUG_w("[Emergency Connetion Lost: Retrying...]");
+        if (!telemSoc.connect(dataStruct.SRVData.IP2, dataStruct.SRVData.IP2P, srv_emergency))
+        {
+            LoginFailCnt++;
+        }
+        else
+        {
+            DEBUG_i("[Emergency Connetion Established!]");
+            LoginFailCnt = 0;
+        }
+        if (LoginFailCnt == 10)
+        {
+            DEBUG_e("!!! [FETAL] [Rebooting..]");
+            esp_restart();
+        }
+    }
+}
+

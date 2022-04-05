@@ -3,6 +3,11 @@
 #include "util.hpp"
 #include "ivn.hpp"
 
+enum server_type_e{
+    srv_telematics,
+    srv_emergency,
+};
+
 class Containers
 {
 private:
