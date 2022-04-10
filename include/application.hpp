@@ -11,10 +11,11 @@
 
 enum com_ch_e
 {
+    COM_GSM1,
+    COM_GSM2,
     COM_USB,
     COM_WIFI,
     COM_BLE,
-    COM_GSM,
 };
 
 enum access_e
@@ -25,19 +26,6 @@ enum access_e
     USR = 3,
 };
 
-enum imu_evt{
-    Normal = 1,
-    OverSpeed,
-    HarshBreak,
-    HarshAccel,
-    RashTurn,
-    IGN_ON,
-    IGN_OFF,
-    MainSuppCon,
-    MainSuppDiscon
-};
-
-void test_task(void *args);
 void dev_core_task(void *args);
 void SendDiagnosticPacket(uint8_t *data, uint16_t len);
 
@@ -78,13 +66,15 @@ private:
     void updateIO_Data();
     void updateIMU_Data();
     void periodicTransmit();
-    void userModeDataProcess();
+    void userModeDataProcess(uint8_t index);
     
     void srvConnectionHandler(uint8_t index);
     int SendResp(char *buf, int comCh);
     
     int SrvReply(String &str);
-    int remoteDiag(uint8_t *data, uint16_t len);
+    void remoteDiag(String &str, int comCh);
+    void remoteDiag(uint8_t *data, uint16_t len);
+    void AdminCmdParse(String &str, int comCh);
     
 
 public:

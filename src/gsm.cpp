@@ -37,7 +37,7 @@ bool QC::begin(HardwareSerial &uart)
     GSM_CHECK_ERR(AT_CheckReply("AT+QIMUX=1"))
     GSM_CHECK_ERR(AT_CheckReply("AT+QIMODE=0"))
     GSM_CHECK_ERR(AT_CheckReply("AT+QIDNSIP=0"))
-    // GSM_CHECK_ERR(AT_CheckReply("AT+QGNSSC=1"))
+    AT_CheckReply("AT+QGNSSC=1");
     return true;
 }
 
@@ -78,7 +78,7 @@ uint8_t QC::getRSSI()
 }
 
 // ------------------------------Single TCP implementation ----------------------------------//
-
+#if (!GSM_TCP_MUX)
 bool QC::connect(const char *host, uint16_t port)
 {
     StartTimer(timOutTmr, MS_SEC(65));
@@ -92,16 +92,16 @@ bool QC::connect(const char *host, uint16_t port)
     sprintf(ATReq, "AT+QIOPEN=\"TCP\",\"%s\",%u", host, port);
     GSM_CHECK_ERR(AT_CheckReply(ATReq, "OK", MS_SEC(65)));
     vTaskDelay(pdMS_TO_TICKS(1000));
-    while (ipState() == CONNECTING)
+    while (ipState() == soc_CONNECTING)
         vTaskDelay(pdMS_TO_TICKS(500));
-    GSM_CHECK_OK((ipState() == CONNECT_OK))
+    GSM_CHECK_OK((ipState() == soc_CONNECT_OK))
 
     return false;
 }
 
 bool QC::disconnect()
 {
-    if (ipState() == CONNECT_OK)
+    if (ipState() == soc_CONNECT_OK)
     {
         GSM_CHECK_ERR(AT_CheckReply("AT+QICLOSE", "CLOSE OK"));
     }
@@ -110,7 +110,7 @@ bool QC::disconnect()
 
 bool QC::connected()
 {
-    return (ipState() == CONNECT_OK);
+    return (ipState() == soc_CONNECT_OK);
 }
 
 int QC::available()
@@ -159,31 +159,41 @@ bool QC::print(const char *buff)
 {
     return write((uint8_t *)buff, strlen(buff));
 }
-
+#endif
 // ------------------------------Multi TCP implementation ----------------------------------//
-
 bool QC::connect(const char *host, uint16_t port, uint8_t index)
 {
+    int CrrState = invalid;
     StartTimer(timOutTmr, MS_SEC(65));
-    while ((connectionStateHandle(IP_GPRSACT, index) != IP_GPRSACT))
-    {
+    do{
+        CrrState = connectionStateHandle(IP_GPRSACT, index);
+
         IF(IsTimerElapsed(timOutTmr), return false;)
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
+    while((CrrState != IP_GPRSACT) && (CrrState != soc_INITIAL));
+
     sprintf(ATReq, "AT+QIOPEN=%u,\"TCP\",\"%s\",%u", index, host, port);
-    GSM_CHECK_ERR(AT_CheckMultiReply(ATReq, "CONNECT OK", MS_SEC(10)));
+    GSM_CHECK_ERR(AT_CheckReply(ATReq, "OK", MS_SEC(10)));
     vTaskDelay(pdMS_TO_TICKS(1000));
+
+    while(ipState(index) == soc_CONNECTING)
+    {
+        DEBUG_i("STATE CONNECTING");
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+
     return true;
 }
 
 bool QC::connected(uint8_t index)
 {
-    return (ipState(index) == CONNECT_OK);
+    return (ipState(index) == soc_CONNECTED);
 }
 
 bool QC::disconnect(uint8_t index)
 {
-    if (ipState(index) == CONNECT_OK)
+    if (ipState(index) == soc_CONNECTED)
     {
         sprintf(ATRsp, "AT+QICLOSE=%u", index);
         GSM_CHECK_ERR(AT_CheckReply(ATRsp, "CLOSE OK"));
@@ -229,7 +239,7 @@ uint8_t QC::read(uint8_t index)
 
 /***PRIVATE METHODS*****/
 /*------------------------------------------------------------------------------------------*/
-
+#if (!GSM_TCP_MUX)
 bool QC::connectNetwork(const char *apn)
 {
     GSM_CHECK_OK(isNetworkConnected)
@@ -263,42 +273,20 @@ bool QC::disconnectNetwork()
 int QC::ipState()
 {
     GSM_CHECK_ERR(AT_WaitFor("AT+QISTAT", 3))
-    SEARCH_STR_RET(ATRsp, "CONNECT OK", CONNECT_OK);
+    SEARCH_STR_RET(ATRsp, "CONNECT OK", soc_CONNECT_OK);
     SEARCH_STR_RET(ATRsp, "INITIAL", IP_INITIAL);
     SEARCH_STR_RET(ATRsp, "START", IP_START);
     SEARCH_STR_RET(ATRsp, "CONFIG", IP_CONFIG);
     SEARCH_STR_RET(ATRsp, "IND", IP_IND);
     SEARCH_STR_RET(ATRsp, "GPRSACT", IP_GPRSACT);
     SEARCH_STR_RET(ATRsp, "STATUS", IP_STATUS);
-    SEARCH_STR_RET(ATRsp, "CONNECTING", CONNECTING);
-    SEARCH_STR_RET(ATRsp, "CLOSE", IP_CLOSE);
+    SEARCH_STR_RET(ATRsp, "CONNECTING", soc_CONNECTING);
+    SEARCH_STR_RET(ATRsp, "CLOSE", soc_IP_CLOSE);
     SEARCH_STR_RET(ATRsp, "PDP DEACT", PDP_DEACT);
     return 0;
 }
 
-int QC::ipState(uint8_t index)
-{
-    GSM_CHECK_ERR(AT_WaitFor("AT+QISTATE", 15))
-
-    char *tok;
-    tok = strtok(ATRsp, "\n");
-    tok = strtok(NULL, "\n");
-    if (strstr(tok, "IP PROCESSING"))
-    {
-        for (int i = 0; i <= index; i++)
-        {
-            tok = strtok(NULL, "\r\n");
-        }
-    }
-    SEARCH_STR_RET(tok, "CONNECTED", CONNECT_OK);
-    SEARCH_STR_RET(tok, "INITIAL", IP_INITIAL);
-    SEARCH_STR_RET(tok, "START", IP_START);
-    SEARCH_STR_RET(tok, "GPRSACT", IP_GPRSACT);
-    SEARCH_STR_RET(tok, "PDP DEACT", PDP_DEACT);
-    return 0;
-}
-
-/*int QC::connectionStateHandle(int check)
+int QC::connectionStateHandle(int check)
 {
     int state = ipState();
     IF((state == check), return state;)
@@ -328,7 +316,35 @@ int QC::ipState(uint8_t index)
     }
 
     return state;
-}*/
+}
+
+#endif
+
+int QC::ipState(uint8_t index)
+{
+    GSM_CHECK_ERR(AT_WaitFor("AT+QISTATE", 15))
+
+    char *tok;
+    tok = strtok(ATRsp, "\n");
+    tok = strtok(NULL, "\n");
+    if (strstr(tok, "IP PROCESSING"))
+    {
+        for (int i = 0; i <= index; i++)
+        {
+            tok = strtok(NULL, "\r\n");
+        }
+
+        SEARCH_STR_RET(tok, "CONNECTED", soc_CONNECTED);
+        SEARCH_STR_RET(tok, "CONNECTING", soc_CONNECTING);
+        SEARCH_STR_RET(tok, "INITIAL", soc_INITIAL);
+        return 0;
+    }
+    SEARCH_STR_RET(tok, "INITIAL", IP_INITIAL);
+    SEARCH_STR_RET(tok, "START", IP_START);
+    SEARCH_STR_RET(tok, "GPRSACT", IP_GPRSACT);
+    SEARCH_STR_RET(tok, "PDP DEACT", PDP_DEACT);
+    return 0;
+}
 
 int QC::connectionStateHandle(int check, uint8_t index)
 {
@@ -349,8 +365,6 @@ int QC::connectionStateHandle(int check, uint8_t index)
         GSM_CHECK_ERR(AT_CheckReply("AT+QIACT"))
     break;
 
-    case IP_GPRSACT:
-        break;
     default:
         DEBUG_w("UNSTATE: %d", state);
         break;

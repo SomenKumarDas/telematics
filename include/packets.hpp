@@ -7,7 +7,6 @@ enum server_type_e{
     srv_telematics,
     srv_emergency,
 };
-
 class Containers
 {
 private:
@@ -233,7 +232,7 @@ private:
     char *fields[20];
 
     int parse_comma_delimited_str(char *string, char **fields, int max_fields);
-
+    
 public:
     const char *dataKey = "DataStruct";
     Preferences Mem;
@@ -271,8 +270,8 @@ public:
         bool MPOW;                                                                                                           // Vehicle Battery disconnected
         char MVOLT[10] = "0";                                                                                                // Voltage in Volts.
         char INTVOLT[10] = "0";                                                                                              // Indicates the level of battery
-        char BATTPER[10] = "0";                                                                                              // Indication for the internal battery percentage
-        char BATTLOWTH[10] = "0";                                                                                            // Indication for the low battery alert generated in percentage
+        uint8_t BATTPER;                                                                                              // Indication for the internal battery percentage
+        uint8_t BATTLOWTH;                                                                                           // Indication for the low battery alert generated in percentage
         char EMRGNC[5] = "0";                                                                                                // Status 1= ON, 0 = OFF
         char TAMPLT[5] = "C";                                                                                                // Cover Closed
         char DINPUT[10] = "0";                                                                                               // 4 digital input statuses
@@ -281,8 +280,8 @@ public:
         char AINPUT2[5] = "0.0";                                                                                             // Analog input 2 voltage in volts
         char OTARSP[30] = "00";                                                                                              // (SERVER1,CFG_GPR,1)
         char RDIAG[20] = "00";
-        char MEM1_PER[5] = "0";
-        char MEM2_PER[5] = "0";
+        uint8_t baud;
+        uint8_t address;
         uint16_t IVN1INT;
         uint16_t IVN2INT;
         uint16_t IVN3INT;
@@ -312,6 +311,8 @@ public:
         uint32_t MSGID;                  // Refer, Message ID Table
         char PKTSTAT[5] = "L";           // L=Live or H= History
         uint32_t FRMNo = 0;              // Messages (000001 to 999999)
+        uint32_t Mem1Cnt = 0;
+        uint32_t Mem2Cnt = 0;
     } AISData;
 
     struct gsm_t
@@ -353,8 +354,8 @@ public:
         float SPEED;
         float PDOP;
         float HDOP;
-        char LTTD[20] = "0";
-        char LNGTD[20] = "0";
+        char LTTD[20] = "0000.0000";
+        char LNGTD[20] = "0000.0000";
         char LTTDIR[5] = "N";
         char LNGTDIR[5] = "E";
         char DELDIST[10];
@@ -375,6 +376,18 @@ public:
 
     String GetIvnFrame(uint8_t idx);
     void setIMEI(const char *data);
+    uint8_t memoryUsed(uint8_t idx)
+    {
+        if(idx == 1)
+        {
+            return ((AISData.Mem1Cnt / 84000) * 100);
+        }
+        else{
+            return ((AISData.Mem2Cnt / 84000) * 100);
+        }
+        return 0;
+    }
+
 };
 
 class LogInPacket
@@ -429,13 +442,25 @@ public:
     }
 };
 
-class EmrgncyPacket
+class EmrgncyPacket : private Containers
 {
 private:
     String Packet;
 
 public:
     const char *Packetize();
+
+    bool pushFrame()
+    {
+        return wirteFrame(Packet);
+    }
+
+    uint16_t avaiableFrame() { return availableFrames(); }
+
+    const char *popFrame()
+    {
+        return readFrame().c_str();
+    }
 };
 
 extern DataStruct dataStruct;

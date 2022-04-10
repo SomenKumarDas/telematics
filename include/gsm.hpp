@@ -2,6 +2,7 @@
 #include "util.hpp"
 
 #define GSM_UART Serial2
+#define GSM_TCP_MUX 1
 #define GSM_CHECK_ERR(x) if(!x) { DEBUG_e("[GSM] [%s]", #x); return false;}
 #define GSM_CHECK_ERR_RET(x,y) if(!x) { DEBUG_e("[GSM] [%s]", #x); return y;}
 #define GSM_CHECK_OK(x) if(x) { return true; }
@@ -26,10 +27,11 @@ enum State_e
     IP_IND,
     IP_GPRSACT,
     IP_STATUS,
-    CONNECTING,
-    IP_CLOSE,
-    CONNECT_OK,
-    PDP_DEACT
+    IP_PROCESSING,
+    PDP_DEACT,
+    soc_INITIAL,
+    soc_CONNECTED,
+    soc_CONNECTING,
 };
 
 class QuectelCellular

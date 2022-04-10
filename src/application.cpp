@@ -3,10 +3,8 @@
 #include "app_ota.hpp"
 
 uint8_t RDG_RXBuff[2000];
-uint8_t RDG_TXBuff[2000];
+char RdgRsp[2000];
 uint8_t RDG_FR_CNT = 0, rdgTmpCnt = 0;
-uint16_t RDG_Idx = 0;
-bool RDG_SendIt = false;
 
 AIS140 ais;
 WiFiClient wClient;
@@ -16,40 +14,6 @@ TrackingPacket trackPack;
 HealthPacket healthPack;
 EmrgncyPacket EmrPack;
 uint8_t DRxBuff[1500];
-
-void test_task(void *args)
-{
-    // uint32_t tmr = 0;
-    // StartTimer(tmr, 2000);
-    STATUS_CHECK(telemSoc.begin(GSM_UART))
-    for (;;)
-    {
-        if (telemSoc.connected(0))
-        {
-            DEBUG_i("CONNECTED");
-            if (telemSoc.available(0))
-            {
-                DEBUG_i("AVAILABLE");
-                while (telemSoc.available(0))
-                    Serial.write(telemSoc.read(0));
-
-                Serial.println();
-            }
-
-            if (telemSoc.print("$FXLPGO001-LIN,AUTOPEEPAL,WB00AB0000,867322034553800,0.0.1,AIS140,00.0000,N,00.0000,N*50", srv_telematics))
-            {
-                DEBUG_i("Sent");
-            }
-        }
-        else
-        {
-            DEBUG_i("DISCONNECTED");
-            telemSoc.connect("165.232.184.128", 8900, 0);
-        }
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-    vTaskDelete(NULL);
-}
 
 void dev_core_task(void *args)
 {
@@ -111,10 +75,7 @@ void wifiHandlerTask(void *args)
     vTaskDelete(NULL);
 }
 
-/************************
-    PUBLIC METHODS
-************************/
-
+/************************ PUBLIC METHODS ************************/
 void AIS140::Init()
 {
 
@@ -153,9 +114,9 @@ void AIS140::DataProcess(void)
 {
     if ((Access == USR))
     {
+        userModeDataProcess(srv_telematics);
         if (telemSoc.connected(srv_telematics))
         {
-            userModeDataProcess();
             periodicTransmit();
         }
         else
@@ -163,11 +124,25 @@ void AIS140::DataProcess(void)
             srvConnectionHandler(srv_telematics);
         }
 
-        if(IsTimerElapsed(EmrPackTmr))
+        if (Emrgncy && IsTimerElapsed(EmrPackTmr))
         {
-            if(telemSoc.connected(srv_emergency))
+            ResetTimer(EmrPackTmr, 5000);
+            if (telemSoc.connected(srv_emergency))
             {
-                IF(!telemSoc.print(EmrPack.Packetize(), srv_emergency), DEBUG_e("EmrPack Send Failed!");)
+                if (!telemSoc.print(EmrPack.Packetize(), srv_emergency))
+                {
+                    if (EmrPack.pushFrame())
+                    {
+                        dataStruct.AISData.Mem2Cnt++;
+                        DEBUG_w("[EMR] [pushFrame]");
+                    }
+                }
+
+                if (EmrPack.avaiableFrame())
+                {
+                    if (!telemSoc.print(EmrPack.popFrame(), srv_telematics))
+                        DEBUG_w("[EMR] [Send]");
+                }
             }
             else
             {
@@ -176,7 +151,7 @@ void AIS140::DataProcess(void)
         }
     }
 
-    if (Serial.available())
+    while (Serial.available())
     {
         char c = (char)Serial.read();
         if (c == '*')
@@ -188,6 +163,27 @@ void AIS140::DataProcess(void)
                 SrvData += c;
             } while (Serial.available() && c != '#');
             ParseCommands(SrvData, COM_USB);
+        }
+        else if (c == '{')
+        {
+            SrvData.clear();
+            do
+            {
+                c = (char)Serial.read();
+                IF(c == '}', break;)
+                SrvData += c;
+            } while (Serial.available());
+            remoteDiag(SrvData, COM_USB);
+        }
+        else if (c == '<')
+        {
+            SrvData = c;
+            do
+            {
+                c = (char)Serial.read();
+                SrvData += c;
+            } while (Serial.available() && c != '>');
+            AdminCmdParse(SrvData, COM_USB);
         }
         else
         {
@@ -215,7 +211,11 @@ void AIS140::ParseCommands(String &str, int comCh)
 
     if (str.indexOf("SEM") > 0)
     {
+        Emrgncy = false;
         StopTimer(EmrPackTmr);
+        DEBUG_i("[SOS STOP]");
+        telemSoc.disconnect(srv_emergency);
+        vTaskDelay(pdMS_TO_TICKS(1000));
         sprintf(buff, "#SEM#OK#");
         SendResp(buff, comCh);
         return;
@@ -386,11 +386,11 @@ void AIS140::ParseCommands(String &str, int comCh)
         return;
     }
 
-    // if (!Security)
-    // {
-    //     SendResp(buff, comCh);
-    //     return;
-    // }
+    if (!Security)
+    {
+        SendResp(buff, comCh);
+        return;
+    }
 
     sprintf(buff, "#ERROR#%02X#", APP_RESP_NACK_7E);
 
@@ -872,15 +872,15 @@ void AIS140::ParseCommands(String &str, int comCh)
             }
             else if (str.indexOf("IVN4") > 0)
             {
-                sprintf(buff, "#GET#IVN4,%x,%x,%x,%x,%x#", IVNs[2].ivnframes[0].FrameID,
-                        IVNs[2].ivnframes[1].FrameID, IVNs[2].ivnframes[2].FrameID,
-                        IVNs[2].ivnframes[3].FrameID, IVNs[2].ivnframes[4].FrameID);
+                sprintf(buff, "#GET#IVN4,%x,%x,%x,%x,%x#", IVNs[3].ivnframes[0].FrameID,
+                        IVNs[3].ivnframes[1].FrameID, IVNs[3].ivnframes[2].FrameID,
+                        IVNs[3].ivnframes[3].FrameID, IVNs[3].ivnframes[4].FrameID);
             }
             else if (str.indexOf("IVN5") > 0)
             {
-                sprintf(buff, "#GET#IVN5,%x,%x,%x,%x,%x#", IVNs[2].ivnframes[0].FrameID,
-                        IVNs[2].ivnframes[1].FrameID, IVNs[2].ivnframes[2].FrameID,
-                        IVNs[2].ivnframes[3].FrameID, IVNs[2].ivnframes[4].FrameID);
+                sprintf(buff, "#GET#IVN5,%x,%x,%x,%x,%x#", IVNs[4].ivnframes[0].FrameID,
+                        IVNs[4].ivnframes[1].FrameID, IVNs[4].ivnframes[2].FrameID,
+                        IVNs[4].ivnframes[3].FrameID, IVNs[4].ivnframes[4].FrameID);
             }
         }
         else if (str.indexOf("SET") > 0)
@@ -893,46 +893,34 @@ void AIS140::ParseCommands(String &str, int comCh)
                 uint8_t cnt = 0;
                 _PTR_(ptr = strtok(strstr(Data, "IVNINT"), ","))
                 _PTR_(ptr = strtok(NULL, ","))
-                if (ptr != NULL)
-                {
-                    cnt++;
-                    dataStruct.DEVData.IVN1INT = atoi(ptr);
-                    // DEBUG_i("ivn1: %u", dataStruct.DEVData.IVN1INT);
-                    dataStruct.Mem.putUShort("IVN1INT", dataStruct.DEVData.IVN1INT);
-                }
+                cnt++;
+                dataStruct.DEVData.baud = atoi(ptr); // DEBUG_i("ivn1: %u", dataStruct.DEVData.baud);
+                dataStruct.Mem.putUChar("baud", dataStruct.DEVData.baud);
                 _PTR_(ptr = strtok(NULL, ","))
-                if (ptr != NULL)
-                {
-                    cnt++;
-                    dataStruct.DEVData.IVN2INT = atoi(ptr);
-                    // DEBUG_i("ivn2: %u", dataStruct.DEVData.IVN2INT);
-                    dataStruct.Mem.putUShort("IVN2INT", dataStruct.DEVData.IVN2INT);
-                }
+                cnt++;
+                dataStruct.DEVData.address = atoi(ptr); // DEBUG_i("ivn1: %u", dataStruct.DEVData.address);
+                dataStruct.Mem.putUChar("address", dataStruct.DEVData.address);
                 _PTR_(ptr = strtok(NULL, ","))
-                if (ptr != NULL)
-                {
-                    cnt++;
-                    dataStruct.DEVData.IVN3INT = atoi(ptr);
-                    // DEBUG_i("ivn3: %u", dataStruct.DEVData.IVN3INT);
-                    dataStruct.Mem.putUShort("IVN3INT", dataStruct.DEVData.IVN3INT);
-                }
+                cnt++;
+                dataStruct.DEVData.IVN1INT = atoi(ptr); // DEBUG_i("ivn1: %u", dataStruct.DEVData.IVN1INT);
+                dataStruct.Mem.putUShort("IVN1INT", dataStruct.DEVData.IVN1INT);
                 _PTR_(ptr = strtok(NULL, ","))
-                if (ptr != NULL)
-                {
-                    cnt++;
-                    dataStruct.DEVData.IVN4INT = atoi(ptr);
-                    // DEBUG_i("ivn4: %u", dataStruct.DEVData.IVN4INT);
-                    dataStruct.Mem.putUShort("IVN4INT", dataStruct.DEVData.IVN3INT);
-                }
-                ptr = strtok(NULL, "#");
-                if (ptr != NULL)
-                {
-                    cnt++;
-                    dataStruct.DEVData.IVN5INT = atoi(ptr);
-                    // DEBUG_i("ivn5: %u", dataStruct.DEVData.IVN5INT);
-                    dataStruct.Mem.putUShort("IVN5INT", dataStruct.DEVData.IVN3INT);
-                }
-                sprintf(buff, (cnt == 5) ? "#SET#IVNINT#OK#" : "#SET#IVNINT#FAIL#");
+                cnt++;
+                dataStruct.DEVData.IVN2INT = atoi(ptr); // DEBUG_i("ivn2: %u", dataStruct.DEVData.IVN2INT);
+                dataStruct.Mem.putUShort("IVN2INT", dataStruct.DEVData.IVN2INT);
+                _PTR_(ptr = strtok(NULL, ","))
+                cnt++;
+                dataStruct.DEVData.IVN3INT = atoi(ptr); // DEBUG_i("ivn3: %u", dataStruct.DEVData.IVN3INT);
+                dataStruct.Mem.putUShort("IVN3INT", dataStruct.DEVData.IVN3INT);
+                _PTR_(ptr = strtok(NULL, ","))
+                cnt++;
+                dataStruct.DEVData.IVN4INT = atoi(ptr); // DEBUG_i("ivn4: %u", dataStruct.DEVData.IVN4INT);
+                dataStruct.Mem.putUShort("IVN4INT", dataStruct.DEVData.IVN4INT);
+                _PTR_(ptr = strtok(NULL, "#"))
+                cnt++;
+                dataStruct.DEVData.IVN5INT = atoi(ptr); // DEBUG_i("ivn5: %u", dataStruct.DEVData.IVN5INT);
+                dataStruct.Mem.putUShort("IVN5INT", dataStruct.DEVData.IVN5INT);
+                sprintf(buff, (cnt == 7) ? "#SET#IVNINT#OK#" : "#SET#IVNINT#FAIL#");
                 StartTimer(ivn1Tmr, dataStruct.DEVData.IVN1INT);
                 StartTimer(ivn2Tmr, dataStruct.DEVData.IVN2INT);
                 StartTimer(ivn3Tmr, dataStruct.DEVData.IVN3INT);
@@ -1051,32 +1039,32 @@ void AIS140::ParseCommands(String &str, int comCh)
                 _PTR_(ptr = strtok(NULL, ","))
                 if (ptr != NULL)
                 {
-                    IVNs[2].ivnframes[0].FrameID = HexAsciToU32(ptr);
-                    dataStruct.Mem.putULong("IVN4[0]", IVNs[2].ivnframes[0].FrameID);
+                    IVNs[3].ivnframes[0].FrameID = HexAsciToU32(ptr);
+                    dataStruct.Mem.putULong("IVN4[0]", IVNs[3].ivnframes[0].FrameID);
                 }
                 _PTR_(ptr = strtok(NULL, ","))
                 if (ptr != NULL)
                 {
-                    IVNs[2].ivnframes[1].FrameID = HexAsciToU32(ptr);
-                    dataStruct.Mem.putULong("IVN4[1]", IVNs[2].ivnframes[1].FrameID);
+                    IVNs[3].ivnframes[1].FrameID = HexAsciToU32(ptr);
+                    dataStruct.Mem.putULong("IVN4[1]", IVNs[3].ivnframes[1].FrameID);
                 }
                 _PTR_(ptr = strtok(NULL, ","))
                 if (ptr != NULL)
                 {
-                    IVNs[2].ivnframes[2].FrameID = HexAsciToU32(ptr);
-                    dataStruct.Mem.putULong("IVN4[2]", IVNs[2].ivnframes[2].FrameID);
+                    IVNs[3].ivnframes[2].FrameID = HexAsciToU32(ptr);
+                    dataStruct.Mem.putULong("IVN4[2]", IVNs[3].ivnframes[2].FrameID);
                 }
                 _PTR_(ptr = strtok(NULL, ","))
                 if (ptr != NULL)
                 {
-                    IVNs[2].ivnframes[3].FrameID = HexAsciToU32(ptr);
-                    dataStruct.Mem.putULong("IVN4[3]", IVNs[2].ivnframes[3].FrameID);
+                    IVNs[3].ivnframes[3].FrameID = HexAsciToU32(ptr);
+                    dataStruct.Mem.putULong("IVN4[3]", IVNs[3].ivnframes[3].FrameID);
                 }
                 _PTR_(ptr = strtok(NULL, ","))
                 if (ptr != NULL)
                 {
-                    IVNs[2].ivnframes[4].FrameID = HexAsciToU32(ptr);
-                    dataStruct.Mem.putULong("IVN4[4]", IVNs[2].ivnframes[4].FrameID);
+                    IVNs[3].ivnframes[4].FrameID = HexAsciToU32(ptr);
+                    dataStruct.Mem.putULong("IVN4[4]", IVNs[3].ivnframes[4].FrameID);
                 }
                 sprintf(buff, "#SET#IVN4#OK#");
             }
@@ -1086,32 +1074,32 @@ void AIS140::ParseCommands(String &str, int comCh)
                 _PTR_(ptr = strtok(NULL, ","))
                 if (ptr != NULL)
                 {
-                    IVNs[2].ivnframes[0].FrameID = HexAsciToU32(ptr);
-                    dataStruct.Mem.putULong("IVN5[0]", IVNs[2].ivnframes[0].FrameID);
+                    IVNs[4].ivnframes[0].FrameID = HexAsciToU32(ptr);
+                    dataStruct.Mem.putULong("IVN5[0]", IVNs[4].ivnframes[0].FrameID);
                 }
                 _PTR_(ptr = strtok(NULL, ","))
                 if (ptr != NULL)
                 {
-                    IVNs[2].ivnframes[1].FrameID = HexAsciToU32(ptr);
-                    dataStruct.Mem.putULong("IVN5[1]", IVNs[2].ivnframes[1].FrameID);
+                    IVNs[4].ivnframes[1].FrameID = HexAsciToU32(ptr);
+                    dataStruct.Mem.putULong("IVN5[1]", IVNs[4].ivnframes[1].FrameID);
                 }
                 _PTR_(ptr = strtok(NULL, ","))
                 if (ptr != NULL)
                 {
-                    IVNs[2].ivnframes[2].FrameID = HexAsciToU32(ptr);
-                    dataStruct.Mem.putULong("IVN5[2]", IVNs[2].ivnframes[2].FrameID);
+                    IVNs[4].ivnframes[2].FrameID = HexAsciToU32(ptr);
+                    dataStruct.Mem.putULong("IVN5[2]", IVNs[4].ivnframes[2].FrameID);
                 }
                 _PTR_(ptr = strtok(NULL, ","))
                 if (ptr != NULL)
                 {
-                    IVNs[2].ivnframes[3].FrameID = HexAsciToU32(ptr);
-                    dataStruct.Mem.putULong("IVN5[3]", IVNs[2].ivnframes[3].FrameID);
+                    IVNs[4].ivnframes[3].FrameID = HexAsciToU32(ptr);
+                    dataStruct.Mem.putULong("IVN5[3]", IVNs[4].ivnframes[3].FrameID);
                 }
                 _PTR_(ptr = strtok(NULL, ","))
                 if (ptr != NULL)
                 {
-                    IVNs[2].ivnframes[4].FrameID = HexAsciToU32(ptr);
-                    dataStruct.Mem.putULong("IVN5[4]", IVNs[2].ivnframes[4].FrameID);
+                    IVNs[4].ivnframes[4].FrameID = HexAsciToU32(ptr);
+                    dataStruct.Mem.putULong("IVN5[4]", IVNs[4].ivnframes[4].FrameID);
                 }
                 sprintf(buff, "#SET#IVN5#OK#");
             }
@@ -1177,30 +1165,30 @@ void AIS140::ParseCommands(String &str, int comCh)
             }
             else if (str.indexOf("IVN4") > 0)
             {
-                IVNs[2].ivnframes[0].FrameID = 0;
-                IVNs[2].ivnframes[1].FrameID = 0;
-                IVNs[2].ivnframes[2].FrameID = 0;
-                IVNs[2].ivnframes[3].FrameID = 0;
-                IVNs[2].ivnframes[4].FrameID = 0;
-                dataStruct.Mem.putULong("IVN4[0]", IVNs[2].ivnframes[0].FrameID);
-                dataStruct.Mem.putULong("IVN4[1]", IVNs[2].ivnframes[1].FrameID);
-                dataStruct.Mem.putULong("IVN4[2]", IVNs[2].ivnframes[2].FrameID);
-                dataStruct.Mem.putULong("IVN4[3]", IVNs[2].ivnframes[3].FrameID);
-                dataStruct.Mem.putULong("IVN4[4]", IVNs[2].ivnframes[4].FrameID);
+                IVNs[3].ivnframes[0].FrameID = 0;
+                IVNs[3].ivnframes[1].FrameID = 0;
+                IVNs[3].ivnframes[2].FrameID = 0;
+                IVNs[3].ivnframes[3].FrameID = 0;
+                IVNs[3].ivnframes[4].FrameID = 0;
+                dataStruct.Mem.putULong("IVN4[0]", IVNs[3].ivnframes[0].FrameID);
+                dataStruct.Mem.putULong("IVN4[1]", IVNs[3].ivnframes[1].FrameID);
+                dataStruct.Mem.putULong("IVN4[2]", IVNs[3].ivnframes[2].FrameID);
+                dataStruct.Mem.putULong("IVN4[3]", IVNs[3].ivnframes[3].FrameID);
+                dataStruct.Mem.putULong("IVN4[4]", IVNs[3].ivnframes[4].FrameID);
                 sprintf(buff, "#CLR#IVN4#OK#");
             }
             else if (str.indexOf("IVN5") > 0)
             {
-                IVNs[2].ivnframes[0].FrameID = 0;
-                IVNs[2].ivnframes[1].FrameID = 0;
-                IVNs[2].ivnframes[2].FrameID = 0;
-                IVNs[2].ivnframes[3].FrameID = 0;
-                IVNs[2].ivnframes[4].FrameID = 0;
-                dataStruct.Mem.putULong("IVN5[0]", IVNs[2].ivnframes[0].FrameID);
-                dataStruct.Mem.putULong("IVN5[1]", IVNs[2].ivnframes[1].FrameID);
-                dataStruct.Mem.putULong("IVN5[2]", IVNs[2].ivnframes[2].FrameID);
-                dataStruct.Mem.putULong("IVN5[3]", IVNs[2].ivnframes[3].FrameID);
-                dataStruct.Mem.putULong("IVN5[4]", IVNs[2].ivnframes[4].FrameID);
+                IVNs[4].ivnframes[0].FrameID = 0;
+                IVNs[4].ivnframes[1].FrameID = 0;
+                IVNs[4].ivnframes[2].FrameID = 0;
+                IVNs[4].ivnframes[3].FrameID = 0;
+                IVNs[4].ivnframes[4].FrameID = 0;
+                dataStruct.Mem.putULong("IVN5[0]", IVNs[4].ivnframes[0].FrameID);
+                dataStruct.Mem.putULong("IVN5[1]", IVNs[4].ivnframes[1].FrameID);
+                dataStruct.Mem.putULong("IVN5[2]", IVNs[4].ivnframes[2].FrameID);
+                dataStruct.Mem.putULong("IVN5[3]", IVNs[4].ivnframes[3].FrameID);
+                dataStruct.Mem.putULong("IVN5[4]", IVNs[4].ivnframes[4].FrameID);
                 sprintf(buff, "#CLR#IVN5#OK#");
             }
             dataStruct.Mem.end();
@@ -1513,8 +1501,8 @@ void AIS140::ParseCommands(String &str, int comCh)
         sprintf(buff, "#ERROR#%02X#", APP_RESP_NACK_10);
         if (str.indexOf("GET") > 0)
         {
-            sprintf(buff, "#GET#GFENCE1#%d,%d,%lf,%lf,%d#", dataStruct.GPSData.Gstatus[0], dataStruct.GPSData.Gkind[0],
-                    dataStruct.GPSData.GLAT[0], dataStruct.GPSData.GLONG[0], dataStruct.GPSData.Grad[0]);
+            sprintf(buff, "#GET#GFENCE1#%d,%d,%d,%lf,%lf#", dataStruct.GPSData.Gstatus[0], dataStruct.GPSData.Gkind[0],
+                    dataStruct.GPSData.Grad[0], dataStruct.GPSData.GLAT[0], dataStruct.GPSData.GLONG[0]);
         }
         else if (str.indexOf("SET") > 0)
         {
@@ -1582,8 +1570,8 @@ void AIS140::ParseCommands(String &str, int comCh)
         sprintf(buff, "#ERROR#%02X#", APP_RESP_NACK_10);
         if (str.indexOf("GET") > 0)
         {
-            sprintf(buff, "#GET#GFENCE2#%d,%d,%lf,%lf,%d#", dataStruct.GPSData.Gstatus[1], dataStruct.GPSData.Gkind[1],
-                    dataStruct.GPSData.GLAT[1], dataStruct.GPSData.GLONG[1], dataStruct.GPSData.Grad[1]);
+            sprintf(buff, "#GET#GFENCE2#%d,%d,%d,%lf,%lf#", dataStruct.GPSData.Gstatus[1], dataStruct.GPSData.Gkind[1],
+                    dataStruct.GPSData.Grad[1], dataStruct.GPSData.GLAT[1], dataStruct.GPSData.GLONG[1]);
         }
         else if (str.indexOf("SET") > 0)
         {
@@ -1651,8 +1639,8 @@ void AIS140::ParseCommands(String &str, int comCh)
         sprintf(buff, "#ERROR#%02X#", APP_RESP_NACK_10);
         if (str.indexOf("GET") > 0)
         {
-            sprintf(buff, "#GET#GFENCE3#%d,%d,%lf,%lf,%d#", dataStruct.GPSData.Gstatus[2], dataStruct.GPSData.Gkind[2],
-                    dataStruct.GPSData.GLAT[2], dataStruct.GPSData.GLONG[2], dataStruct.GPSData.Grad[2]);
+            sprintf(buff, "#GET#GFENCE3#%d,%d,%d,%lf,%lf#", dataStruct.GPSData.Gstatus[2], dataStruct.GPSData.Gkind[2],
+                    dataStruct.GPSData.Grad[2], dataStruct.GPSData.GLAT[2], dataStruct.GPSData.GLONG[2]);
         }
         else if (str.indexOf("SET") > 0)
         {
@@ -1852,14 +1840,11 @@ void AIS140::testFunc()
     updateGPS_Data();
 }
 
-/************************
-    PRIVATE METHODS
-************************/
-
+/*********************** PRIVATE METHODS ************************/
 bool AIS140::devConfigInit()
 {
     dataStruct.Mem.begin(APP_CNF, true);
-    Access = USR; // dataStruct.Mem.getInt("ACCESS", APEOL);
+    Access = dataStruct.Mem.getInt("ACCESS", APEOL);
     wlan = dataStruct.Mem.getBool("wlan", false);
     dataStruct.Mem.end();
     dataStruct.DataStructInit();
@@ -1881,71 +1866,261 @@ bool AIS140::userModeinit()
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
-    StartTimer(srvStateTmr, 5000);
-    StartTimer(TrackPackTmr, 1000);
-    StartTimer(HealthPackTmr, 1500); // dataStruct.AISData.HLTINT);
-    // if (dataStruct.DEVData.IVN1INT)
-    //     StartTimer(ivn1Tmr, dataStruct.DEVData.IVN1INT);
-    // if (dataStruct.DEVData.IVN2INT)
-    //     StartTimer(ivn2Tmr, dataStruct.DEVData.IVN2INT);
-    // if (dataStruct.DEVData.IVN3INT)
-    //     StartTimer(ivn3Tmr, dataStruct.DEVData.IVN3INT);
-    // if (dataStruct.DEVData.IVN4INT)
-    //     StartTimer(ivn4Tmr, dataStruct.DEVData.IVN4INT);
-    // if (dataStruct.DEVData.IVN5INT)
-    //     StartTimer(ivn5Tmr, dataStruct.DEVData.IVN5INT);
+    StartTimer(TrackPackTmr, 2000);
+    StartTimer(HealthPackTmr, 3000); // dataStruct.AISData.HLTINT);
+    if (dataStruct.DEVData.IVN1INT)
+        StartTimer(ivn1Tmr, dataStruct.DEVData.IVN1INT);
+    if (dataStruct.DEVData.IVN2INT)
+        StartTimer(ivn2Tmr, dataStruct.DEVData.IVN2INT);
+    if (dataStruct.DEVData.IVN3INT)
+        StartTimer(ivn3Tmr, dataStruct.DEVData.IVN3INT);
+    if (dataStruct.DEVData.IVN4INT)
+        StartTimer(ivn4Tmr, dataStruct.DEVData.IVN4INT);
+    if (dataStruct.DEVData.IVN5INT)
+        StartTimer(ivn5Tmr, dataStruct.DEVData.IVN5INT);
 
     return true;
 }
 
-void AIS140::userModeDataProcess()
+void AIS140::userModeDataProcess(uint8_t index)
 {
-    if (telemSoc.available(srv_telematics))
+    while (telemSoc.available(index))
     {
-        char c = (char)telemSoc.read(srv_telematics);
+        char c = (char)telemSoc.read(index);
         if (c == '*')
         {
             SrvData = c;
             do
             {
-                c = (char)telemSoc.read(srv_telematics);
+                c = (char)telemSoc.read(index);
                 SrvData += c;
-            } while (telemSoc.available(srv_telematics) && c != '#');
-            ParseCommands(SrvData, COM_GSM);
+            } while (telemSoc.available(index) && c != '#');
+            ParseCommands(SrvData, index);
         }
         else if (c == '$')
         {
             SrvData = c;
             do
             {
-                c = (char)telemSoc.read(srv_telematics);
+                c = (char)telemSoc.read(index);
                 SrvData += c;
-            } while (telemSoc.available(srv_telematics) && c != '&');
+            } while (telemSoc.available(index) && c != '&');
             SrvReply(SrvData);
+        }
+        else if (c == '{')
+        {
+            SrvData.clear();
+            do
+            {
+                c = (char)telemSoc.read(index);
+                IF(c == '}', break;)
+                SrvData += c;
+            } while (telemSoc.available(index));
+            remoteDiag(SrvData, index);
         }
         else
         {
-            DEBUG_w("invalid Frame: [", telemSoc.available(srv_telematics));
+            DEBUG_w("ERR [%u] [", telemSoc.available(index));
             int x;
-            while ((x = telemSoc.available(srv_telematics)) > 0)
+            while ((x = telemSoc.available(index)) > 0)
             {
                 while (x--)
-                    Serial.print(((char)telemSoc.read(srv_telematics)));
+                    Serial.print(((char)telemSoc.read(index)));
             }
             Serial.println("]");
         }
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
+
+void AIS140::periodicTransmit()
+{
+    if (IsTimerElapsed(TrackPackTmr))
+    {
+        ResetTimer(TrackPackTmr, 2000);
+        updateGSM_Data();
+        updateGPS_Data();
+        updateIO_Data(); // debug_d("[TRK: %s]", trackPack.Packetize());
+        if (!telemSoc.print(trackPack.Packetize(), srv_telematics))
+        {
+            if (trackPack.pushFrame())
+            {
+                dataStruct.AISData.Mem1Cnt++;
+                DEBUG_w("[TRK] [pushFrame]");
+            }
+        }
+
+        if (trackPack.avaiableFrame())
+        {
+            if (!telemSoc.print(trackPack.popFrame(), srv_telematics))
+                DEBUG_w("[TRK] [Send]");
+        }
+    }
+
+    if (IsTimerElapsed(HealthPackTmr) /*&& (dataStruct.AISData.HLTINT)*/)
+    {
+        ResetTimer(HealthPackTmr, 3000); // dataStruct.AISData.HLTINT
+        // debug_d("[HLT: %s]", healthPack.Packetize());
+
+        if (!telemSoc.print(healthPack.Packetize(), srv_telematics))
+        {
+            if (healthPack.pushFrame())
+            {
+                dataStruct.AISData.Mem1Cnt++;
+                DEBUG_w("[HLT] [pushFrame]");
+            }
+        }
+
+        if (healthPack.avaiableFrame())
+        {
+            if (!telemSoc.print(healthPack.popFrame(), srv_telematics))
+                DEBUG_w("[HLT] [Send]");
+        }
+    }
+
+    if (dataStruct.DEVData.IVN1INT && IsTimerElapsed(ivn1Tmr))
+    {
+        ResetTimer(ivn1Tmr, dataStruct.DEVData.IVN1INT);
+        String data = "$";
+        data += String(dataStruct.DEVData.deviceType) + "-";
+        data += String("IVN1") + ",";
+        data += String(dataStruct.DEVData.vendorID) + ",";
+        data += String(dataStruct.GSMData.IMEI) + ",";
+        data += dataStruct.GetIvnFrame(0);
+        data += "*50";
+        // debug_d("ivn1: %s", data.c_str());
+        SendResp((char *)data.c_str(), COM_GSM1);
+    }
+
+    if (dataStruct.DEVData.IVN2INT && IsTimerElapsed(ivn2Tmr))
+    {
+        ResetTimer(ivn2Tmr, dataStruct.DEVData.IVN2INT);
+        String data = "$";
+        data += String(dataStruct.DEVData.deviceType) + "-";
+        data += String("IVN2") + ",";
+        data += String(dataStruct.DEVData.vendorID) + ",";
+        data += String(dataStruct.GSMData.IMEI) + ",";
+        data += dataStruct.GetIvnFrame(1);
+        data += "*50";
+        // debug_d("ivn2: %s", data.c_str());
+        SendResp((char *)data.c_str(), COM_GSM1);
+    }
+
+    if (dataStruct.DEVData.IVN3INT && IsTimerElapsed(ivn3Tmr))
+    {
+        ResetTimer(ivn3Tmr, dataStruct.DEVData.IVN3INT);
+        String data = "$";
+        data += String(dataStruct.DEVData.deviceType) + "-";
+        data += String("IVN3") + ",";
+        data += String(dataStruct.DEVData.vendorID) + ",";
+        data += String(dataStruct.GSMData.IMEI) + ",";
+        data += dataStruct.GetIvnFrame(2);
+        data += "*50";
+        // debug_d("ivn3: %s", data.c_str());
+        SendResp((char *)data.c_str(), COM_GSM1);
+    }
+
+    if (dataStruct.DEVData.IVN4INT && IsTimerElapsed(ivn4Tmr))
+    {
+        ResetTimer(ivn4Tmr, dataStruct.DEVData.IVN4INT);
+        String data = "$";
+        data += String(dataStruct.DEVData.deviceType) + "-";
+        data += String("IVN4") + ",";
+        data += String(dataStruct.DEVData.vendorID) + ",";
+        data += String(dataStruct.GSMData.IMEI) + ",";
+        data += dataStruct.GetIvnFrame(3);
+        data += "*50";
+        // debug_d("ivn4: %s", data.c_str());
+        SendResp((char *)data.c_str(), COM_GSM1);
+    }
+
+    if (dataStruct.DEVData.IVN5INT && IsTimerElapsed(ivn5Tmr))
+    {
+        ResetTimer(ivn5Tmr, dataStruct.DEVData.IVN5INT);
+        String data = "$";
+        data += String(dataStruct.DEVData.deviceType) + "-";
+        data += String("IVN5") + ",";
+        data += String(dataStruct.DEVData.vendorID) + ",";
+        data += String(dataStruct.GSMData.IMEI) + ",";
+        data += dataStruct.GetIvnFrame(4);
+        data += "*50";
+        // debug_d("ivn5: %s", data.c_str());
+        SendResp((char *)data.c_str(), COM_GSM1);
+    }
+}
+
+// ============================ Remote Diagnostics ============================ //
+
+void AIS140::remoteDiag(String &str, int comCh)
+{
+    DEBUG_d("[RDG] > [%s]", str.c_str());
+    uint32_t idx = 0, i = 0;
+    uint8_t Nb1 = 0, Nb2 = 0;
+    do
+    {
+        IF((Nb1 = str[i++]) == 0x2c, continue;)
+        Nb2 = str[i++];
+        Nb1 = (Nb1 > 64) ? (Nb1 - 87) : (Nb1 - 48);
+        Nb2 = (Nb2 > 64) ? (Nb2 - 87) : (Nb2 - 48);
+        RDG_RXBuff[idx++] = (Nb1 << 4) | (Nb2);
+    } while (i < str.length());
+    remoteDiag(RDG_RXBuff, idx);
+}
+
+void AIS140::remoteDiag(uint8_t *data, uint16_t len)
+{
+    uint16_t idx = 0, frameLen = 0;
+    RDG_FR_CNT = 0;
+
+    while (idx < (len))
+    {
+        frameLen = ((uint16_t)(data[idx] & 0x0F) << 8) | (uint16_t)data[idx + 1];
+        RDG_FR_CNT += ((data[idx] & 0xF0) == 0x40) ? 2 : 1;
+        idx += frameLen + 2;
+    }
+    idx = frameLen = 0;
+
+    while (idx < (len))
+    {
+        frameLen = ((uint16_t)(data[idx] & 0x0F) << 8) | (uint16_t)data[idx + 1];
+        APP_ProcessData(&data[idx], (frameLen + 2), (APP_CHANNEL_t)0);
+        idx += frameLen + 2;
+    }
+}
+
+void SendDiagnosticPacket(uint8_t *data, uint16_t len)
+{
+    IF(rdgTmpCnt == 0, sprintf(RdgRsp, "#remote,");)
+    rdgTmpCnt++;
+
+    if (RDG_FR_CNT == rdgTmpCnt)
+    {
+        for (int i = 0; i < len; i++)
+        {
+            sprintf(RdgRsp, "%s%02x", RdgRsp, data[i]);
+        }
+        sprintf(RdgRsp, "%s#", RdgRsp);
+        DEBUG_d("[RDG] < [%s]", RdgRsp);
+        telemSoc.print(RdgRsp, srv_telematics);
+        rdgTmpCnt = 0;
+    }
+    else
+    {
+        for (int i = 0; i < len; i++)
+        {
+            sprintf(RdgRsp, "%s%02x", RdgRsp, data[i]);
+        }
+        sprintf(RdgRsp, "%s,", RdgRsp);
+    }
+}
+
+//---------------------------------------------------------------//
 
 bool AIS140::srvLogin(const char *host, uint16_t port)
 {
     LogInPacket logPack;
-    if (telemSoc.connected(srv_telematics))
-    {
-        STATUS_CHECK(telemSoc.disconnect(srv_telematics))
-    }
-    STATUS_CHECK(telemSoc.connect(host, port, srv_telematics))
-    STATUS_CHECK(telemSoc.print(logPack.Packetize(), srv_telematics))
+    STATUS_CHECK_EXE(telemSoc.connect(host, port, srv_telematics))
+    STATUS_CHECK_EXE(telemSoc.print(logPack.Packetize(), srv_telematics))
     DEBUG_d("DEV: %s", logPack.Packetize());
 
     StartTimer(timOutTmr, 5000);
@@ -1962,100 +2137,50 @@ bool AIS140::srvLogin(const char *host, uint16_t port)
         DEBUG_i("SRV: Login PASS");
     else
     {
-        DEBUG_w("SRV: Login <%s>", SrvData.c_str());
+        DEBUG_w("LogIn Failed <%s>", SrvData.c_str());
         return false;
     }
 
     return true;
 }
 
-void AIS140::periodicTransmit()
+void AIS140::srvConnectionHandler(uint8_t index)
 {
-    if (IsTimerElapsed(TrackPackTmr))
+    if (index == srv_telematics)
     {
-        ResetTimer(TrackPackTmr, 2000);
-        // updateGSM_Data();
-        // updateGPS_Data();
-        // updateIO_Data(); // debug_d("[TRK: %s]", trackPack.Packetize());
-        if (!telemSoc.print(trackPack.Packetize(), srv_telematics))
+        DEBUG_w("[Telematics Connetion Lost: Retrying...]");
+        if (!telemSoc.connect(dataStruct.SRVData.IP1, dataStruct.SRVData.IP1P, srv_telematics))
         {
-            if (trackPack.pushFrame())
-                DEBUG_w("[TRK] [pushFrame]");
+            LoginFailCnt++;
         }
-
-        if (telemSoc.connected(srv_telematics) && trackPack.avaiableFrame())
+        else
         {
-            if (!telemSoc.print(trackPack.popFrame(), srv_telematics))
-                DEBUG_w("[TRK] [Send]");
+            DEBUG_i("[Telematics Connetion Established!]");
+            LoginFailCnt = 0;
         }
-    }
-
-    if (IsTimerElapsed(HealthPackTmr) /*&& (dataStruct.AISData.HLTINT)*/)
-    {
-        ResetTimer(HealthPackTmr, 3000); // dataStruct.AISData.HLTINT
-        // debug_d("[HLT: %s]", healthPack.Packetize());
-
-        if (!telemSoc.print(healthPack.Packetize(), srv_telematics))
+        if (LoginFailCnt == 10)
         {
-            if (healthPack.pushFrame())
-                DEBUG_w("[HLT] [pushFrame]");
-        }
-
-        if (telemSoc.connected(srv_telematics) && healthPack.avaiableFrame())
-        {
-            if (!telemSoc.print(healthPack.popFrame(), srv_telematics))
-                DEBUG_w("[HLT] [Send]");
+            DEBUG_e("!!! [FETAL] [Rebooting..]");
+            esp_restart();
         }
     }
-
-    if (dataStruct.DEVData.IVN1INT && IsTimerElapsed(ivn1Tmr))
+    else if (index == srv_emergency)
     {
-        ResetTimer(ivn1Tmr, dataStruct.DEVData.IVN1INT);
-        String data = "$IVN1,autopeepal,";
-        data += dataStruct.GetIvnFrame(0);
-        data += "*50";
-        // debug_d("ivn1: %s", data.c_str());
-        SendResp((char *)data.c_str(), COM_GSM);
-    }
-
-    if (dataStruct.DEVData.IVN2INT && IsTimerElapsed(ivn2Tmr))
-    {
-        ResetTimer(ivn2Tmr, dataStruct.DEVData.IVN2INT);
-        String data = "$IVN2,autopeepal,";
-        data += dataStruct.GetIvnFrame(1);
-        data += "*50";
-        // debug_d("ivn2: %s", data.c_str());
-        SendResp((char *)data.c_str(), COM_GSM);
-    }
-
-    if (dataStruct.DEVData.IVN3INT && IsTimerElapsed(ivn3Tmr))
-    {
-        ResetTimer(ivn3Tmr, dataStruct.DEVData.IVN3INT);
-        String data = "$IVN3,autopeepal,";
-        data += dataStruct.GetIvnFrame(2);
-        data += "*50";
-        // debug_d("ivn3: %s", data.c_str());
-        SendResp((char *)data.c_str(), COM_GSM);
-    }
-
-    if (dataStruct.DEVData.IVN4INT && IsTimerElapsed(ivn4Tmr))
-    {
-        ResetTimer(ivn4Tmr, dataStruct.DEVData.IVN4INT);
-        String data = "$IVN4,autopeepal,";
-        data += dataStruct.GetIvnFrame(2);
-        data += "*50";
-        // debug_d("ivn4: %s", data.c_str());
-        SendResp((char *)data.c_str(), COM_GSM);
-    }
-
-    if (dataStruct.DEVData.IVN5INT && IsTimerElapsed(ivn5Tmr))
-    {
-        ResetTimer(ivn5Tmr, dataStruct.DEVData.IVN5INT);
-        String data = "$IVN5,autopeepal,";
-        data += dataStruct.GetIvnFrame(2);
-        data += "*50";
-        // debug_d("ivn5: %s", data.c_str());
-        SendResp((char *)data.c_str(), COM_GSM);
+        DEBUG_w("[Emergency Connetion Lost: Retrying...]");
+        if (!telemSoc.connect(dataStruct.SRVData.IP2, dataStruct.SRVData.IP2P, srv_emergency))
+        {
+            LoginFailCnt++;
+        }
+        else
+        {
+            DEBUG_i("[Emergency Connetion Established!]");
+            LoginFailCnt = 0;
+        }
+        if (LoginFailCnt == 10)
+        {
+            DEBUG_e("!!! [FETAL] [Rebooting..]");
+            esp_restart();
+        }
     }
 }
 
@@ -2065,96 +2190,24 @@ int AIS140::SrvReply(String &str)
     return ESP_OK;
 }
 
-int AIS140::remoteDiag(uint8_t *data, uint16_t len)
-{
-    uint16_t idx = 0, frameLen = 0;
-    RDG_FR_CNT = 0;
-
-    Serial.printf("SRV: ");
-    for (int i = 0; i < len; i++)
-        Serial.printf("%02x", data[i]);
-    Serial.println();
-
-    while (idx < (len))
-    {
-        frameLen = ((uint16_t)(data[idx] & 0x0F) << 8) | (uint16_t)data[idx + 1];
-        RDG_FR_CNT += ((data[idx] & 0x0F) == 0x40) ? 2 : 1;
-        idx += frameLen + 2;
-    }
-    idx = frameLen = 0;
-
-    while (idx < (len))
-    {
-        frameLen = ((uint16_t)(data[idx] & 0x0F) << 8) | (uint16_t)data[idx + 1];
-        APP_ProcessData(&data[idx], (frameLen + 2), (APP_CHANNEL_t)0);
-        idx += frameLen + 2;
-    }
-
-    return ESP_OK;
-}
-
-void SendDiagnosticPacket(uint8_t *data, uint16_t len)
-{
-    // char respBuff[20 + len];
-    // respBuff[0] = '#';
-    // respBuff[1] = 'r';
-    // respBuff[2] = 'e';
-    // respBuff[3] = 'm';
-    // respBuff[4] = 'o';
-    // respBuff[5] = 't';
-    // respBuff[6] = 'e';
-    // respBuff[7] = ',';
-    // memcpy(&respBuff[8], (void *)data, len);
-    // respBuff[len + 8] = '#';
-    // telemSoc.write(respBuff, len + 9);
-    //   Serial.write(respBuff, len + 9);
-    // Serial.printf("DEV: ");
-    // for (int i = 0; i < len; i++)
-    //     Serial.printf("%02x", data[i]);
-    // Serial.println();
-
-    rdgTmpCnt++;
-
-    if (RDG_Idx == 0)
-    {
-        sprintf((char *)RDG_TXBuff, "#remote,");
-        RDG_Idx = 8;
-    }
-
-    if (RDG_FR_CNT == rdgTmpCnt)
-    {
-        memcpy(&RDG_TXBuff[RDG_Idx], (void *)data, len);
-        RDG_TXBuff[len + (RDG_Idx++)] = '#';
-        telemSoc.write(RDG_TXBuff, len + RDG_Idx, srv_telematics);
-
-        Serial.printf("DEV: ");
-        for (int i = 0; i < (len + RDG_Idx); i++)
-            Serial.printf("%02x", RDG_TXBuff[i]);
-        Serial.println();
-
-        rdgTmpCnt = 0;
-    }
-    else
-    {
-        memcpy(&RDG_TXBuff[RDG_Idx], (void *)data, len);
-        RDG_Idx += len;
-    }
-}
-
 int AIS140::SendResp(char *buf, int comCh)
 {
     switch (comCh)
     {
+    case COM_GSM1:
+        telemSoc.print(buf, srv_telematics);
+        break;
+
+    case COM_GSM2:
+        telemSoc.print(buf, srv_emergency);
+        break;
+
     case COM_USB:
-        Serial.write(buf, strlen(buf));
+        Serial.write(buf);
         break;
 
     case COM_WIFI:
         wClient.write(buf, strlen(buf));
-        break;
-
-    case COM_GSM:
-        telemSoc.print(buf, srv_telematics);
         break;
 
     default:
@@ -2271,116 +2324,81 @@ void AIS140::updateGPS_Data()
 
 void AIS140::updateIO_Data()
 {
-    // debug_v("SOS: %d IGN: %d Main: %u - %lf Batt: %u - %lf", digitalRead(DI_SOS), digitalRead(DI_IGN),
-    // (double)(analogRead(Adc_MainSupp) * 0.010017), (double)(analogRead(Adc_intBatt) * 0.001603));
+    sprintf(dataStruct.AISData.PKTYPE, "NR");
 
-    float mainSup = ((float)analogRead(Adc_MainSupp) * 0.010017);
-    float intBatt = ((float)analogRead(Adc_intBatt) * 0.001603);
+    DEBUG_v("[SOS: %d IGN: %d Main: %2.2lf IntBatt: %2.2lf]", digitalRead(DI_SOS), digitalRead(DI_IGN),
+            (double)(analogRead(Adc_MainSupp) * 0.010017), (double)(analogRead(Adc_intBatt) * 0.001603));
 
-    // debug_d("DI_SOS: %d", digitalRead(DI_SOS));
-
-    if (digitalRead(DI_SOS))
-    {
-        DEBUG_i("SOS Pressed!!");
-        StartTimer(EmrPackTmr, 5000);
-    }
-
-    if (digitalRead(DI_IGN))
-    {
-        dataStruct.DEVData.IGNISTAT = true;
-    }
-    else
-    {
-        dataStruct.DEVData.IGNISTAT = false;
-    }
+    float mainSup = (float)(analogRead(Adc_MainSupp) * 0.010017);
+    float intBatt = (float)(analogRead(Adc_intBatt) * 0.001603);
 
     sprintf(dataStruct.DEVData.MVOLT, "%2.2f", mainSup);
     sprintf(dataStruct.DEVData.INTVOLT, "%2.2f", intBatt);
-    dataStruct.DEVData.MPOW = (bool)((mainSup > 5.00) ? true : false);
-}
+    dataStruct.DEVData.BATTPER = map((long)mainSup, 4, 12, 0, 100);
 
-void AIS140::updateIMU_Data()
-{
-    // Need to write code for event captures:
+    if (digitalRead(DI_SOS))
+    {
+        Emrgncy = true;
+        StartTimer(EmrPackTmr, 5000);
+        DEBUG_i("[SOS START]");
+    }
 
-    if (devEvtType == OverSpeed)
+    if ((!dataStruct.DEVData.IGNISTAT) && (digitalRead(DI_IGN)))
     {
-        sprintf(dataStruct.AISData.PKTYPE, "OS");
-    }
-    else if (devEvtType == HarshBreak)
-    {
-        sprintf(dataStruct.AISData.PKTYPE, "HB");
-    }
-    else if (devEvtType == HarshAccel)
-    {
-        sprintf(dataStruct.AISData.PKTYPE, "HA");
-    }
-    else if (devEvtType == RashTurn)
-    {
-        sprintf(dataStruct.AISData.PKTYPE, "RT");
-    }
-    else if (devEvtType == IGN_ON)
-    {
+        dataStruct.DEVData.IGNISTAT = true;
         sprintf(dataStruct.AISData.PKTYPE, "IN");
     }
-    else if (devEvtType == IGN_OFF)
+
+    if ((dataStruct.DEVData.IGNISTAT) && (!digitalRead(DI_IGN)))
     {
+        dataStruct.DEVData.IGNISTAT = false;
         sprintf(dataStruct.AISData.PKTYPE, "IF");
     }
-    else if (devEvtType == MainSuppCon)
+
+    if (dataStruct.DEVData.MPOW && !(mainSup > (float)5.00))
     {
         sprintf(dataStruct.AISData.PKTYPE, "BD");
     }
-    else if (devEvtType == MainSuppDiscon)
+
+    if (!dataStruct.DEVData.MPOW && (mainSup > (float)5.00))
+    {
+        dataStruct.DEVData.MPOW = true;
+        sprintf(dataStruct.AISData.PKTYPE, "BR");
+    }
+
+    if (dataStruct.DEVData.BATTPER < dataStruct.DEVData.BATTLOWTH)
     {
         sprintf(dataStruct.AISData.PKTYPE, "BL");
-    }
-    else
-    {
-        sprintf(dataStruct.AISData.PKTYPE, "NR");
     }
 }
 
 //--------------------------------
 
-void AIS140::srvConnectionHandler(uint8_t index)
+void AIS140::AdminCmdParse(String &str, int comCh)
 {
-
-    if (index == srv_telematics)
+    char buff[512];
+    if (str.indexOf("SET") > 0)
     {
-        DEBUG_w("[Telematics Connetion Lost: Retrying...]");
-        if (!telemSoc.connect(dataStruct.SRVData.IP1, dataStruct.SRVData.IP1P, srv_telematics))
+        if (str.indexOf("EMR") > 0)
         {
-            LoginFailCnt++;
-        }
-        else
-        {
-            DEBUG_i("[Telematics Connetion Established!]");
-            LoginFailCnt = 0;
-        }
-        if (LoginFailCnt == 10)
-        {
-            DEBUG_e("!!! [FETAL] [Rebooting..]");
-            esp_restart();
+            Emrgncy = true;
+            StartTimer(EmrPackTmr, 5000);
+            DEBUG_i("SOS START");
+            sprintf(buff, "SET|EMR|OK");
         }
     }
-    else if(index == srv_emergency)
+    else if (str.indexOf("CLR") > 0)
     {
-        DEBUG_w("[Emergency Connetion Lost: Retrying...]");
-        if (!telemSoc.connect(dataStruct.SRVData.IP2, dataStruct.SRVData.IP2P, srv_emergency))
+        if (str.indexOf("EMR") > 0)
         {
-            LoginFailCnt++;
-        }
-        else
-        {
-            DEBUG_i("[Emergency Connetion Established!]");
-            LoginFailCnt = 0;
-        }
-        if (LoginFailCnt == 10)
-        {
-            DEBUG_e("!!! [FETAL] [Rebooting..]");
-            esp_restart();
+            Emrgncy = false;
+            StopTimer(EmrPackTmr);
+            DEBUG_i("SOS STOP");
+            telemSoc.disconnect(srv_emergency);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            sprintf(buff, "CLR|EMR|OK");
         }
     }
+    SendResp(buff, comCh);
+    return;
 }
-
