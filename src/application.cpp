@@ -2306,19 +2306,9 @@ void AIS140::updateGPS_Data()
 {
     dataStruct.updateGPSData((char *)telemSoc.getGPSFrame());
 
-    if (dataStruct.checkGeoFence(0))
+    for(int i = 0; i < 3; i++)
     {
-        DEBUG_i("[GEO FENCE 1 TRIGERED");
-    }
-
-    if (dataStruct.checkGeoFence(1))
-    {
-        DEBUG_i("[GEO FENCE 2 TRIGERED");
-    }
-
-    if (dataStruct.checkGeoFence(2))
-    {
-        DEBUG_i("[GEO FENCE 3 TRIGERED");
+        IF(dataStruct.checkGeoFence(i), DEBUG_i("[GEO FENCE %u TRIGERED", (i + 1));)
     }
 }
 

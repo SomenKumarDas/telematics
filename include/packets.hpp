@@ -3,7 +3,8 @@
 #include "util.hpp"
 #include "ivn.hpp"
 
-enum server_type_e{
+enum server_type_e
+{
     srv_telematics,
     srv_emergency,
 };
@@ -232,7 +233,11 @@ private:
     char *fields[20];
 
     int parse_comma_delimited_str(char *string, char **fields, int max_fields);
-    
+    double GpsEncodingToDegrees(char *gpsencoding);
+    double deg2rad(double deg);
+    double rad2deg(double rad);
+    double distance(double lat1, double lon1, double lat2, double lon2);
+
 public:
     const char *dataKey = "DataStruct";
     Preferences Mem;
@@ -255,12 +260,12 @@ public:
     struct dev_t
     {
         char deviceType[20] = "FXLPGO001";
-        char vendorID[15] = "AUTOPEEPAL";                                                                                    // vendor ID
-        char FWVER[20] = "0.0.1";                                                                                            // Firmware version
-        char PROTVER[20] = "AIS140";  
+        char vendorID[15] = "AUTOPEEPAL"; // vendor ID
+        char FWVER[20] = "0.0.1";         // Firmware version
+        char PROTVER[20] = "AIS140";
         char ssid[20];
         char pswd[20];
-        char VEHREGNUM[20];                                                                                   
+        char VEHREGNUM[20];
         char VEHVIN[18];
         uint8_t APK[16] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00};  // AEOL Session Secret Key
         uint8_t VMEK[16] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00}; // VMEOL Session Secret Key
@@ -270,8 +275,8 @@ public:
         bool MPOW;                                                                                                           // Vehicle Battery disconnected
         char MVOLT[10] = "0";                                                                                                // Voltage in Volts.
         char INTVOLT[10] = "0";                                                                                              // Indicates the level of battery
-        uint8_t BATTPER;                                                                                              // Indication for the internal battery percentage
-        uint8_t BATTLOWTH;                                                                                           // Indication for the low battery alert generated in percentage
+        uint8_t BATTPER;                                                                                                     // Indication for the internal battery percentage
+        uint8_t BATTLOWTH;                                                                                                   // Indication for the low battery alert generated in percentage
         char EMRGNC[5] = "0";                                                                                                // Status 1= ON, 0 = OFF
         char TAMPLT[5] = "C";                                                                                                // Cover Closed
         char DINPUT[10] = "0";                                                                                               // 4 digital input statuses
@@ -294,23 +299,23 @@ public:
 
     struct ais_t
     {
-        uint16_t HLTINT;                 // Health Packet Interval
-        uint16_t HLTPKT;                 // Health Packet
-        uint16_t OVSPDLMT;               // Overspeed Limit
-        uint16_t HRSHBRK;                // Harsh Brake Limit
-        uint16_t HRSHACL;                // Harsh Acceleration Limit
-        uint16_t RSHTURN;                // Rash Turn Limit
+        uint16_t HLTINT;   // Health Packet Interval
+        uint16_t HLTPKT;   // Health Packet
+        uint16_t OVSPDLMT; // Overspeed Limit
+        uint16_t HRSHBRK;  // Harsh Brake Limit
+        uint16_t HRSHACL;  // Harsh Acceleration Limit
+        uint16_t RSHTURN;  // Rash Turn Limit
         char SOSNUM1[20];
         char SOSNUM2[20];
-        uint16_t IGNINT;                 // Ignition ON Interval
-        uint16_t IGFINT;                 // Ignition OFF Interval
-        uint16_t PANINT;                 // Panic Interval
-        uint16_t SLPTM;                  // Sleep Time
-        uint8_t BATALT;                  // Internal Battery Alert limit
-        char PKTYPE[5] = "NR";           // Specify the packet type
-        uint32_t MSGID;                  // Refer, Message ID Table
-        char PKTSTAT[5] = "L";           // L=Live or H= History
-        uint32_t FRMNo = 0;              // Messages (000001 to 999999)
+        uint16_t IGNINT;       // Ignition ON Interval
+        uint16_t IGFINT;       // Ignition OFF Interval
+        uint16_t PANINT;       // Panic Interval
+        uint16_t SLPTM;        // Sleep Time
+        uint8_t BATALT;        // Internal Battery Alert limit
+        char PKTYPE[5] = "NR"; // Specify the packet type
+        uint32_t MSGID;        // Refer, Message ID Table
+        char PKTSTAT[5] = "L"; // L=Live or H= History
+        uint32_t FRMNo = 0;    // Messages (000001 to 999999)
         uint32_t Mem1Cnt = 0;
         uint32_t Mem2Cnt = 0;
     } AISData;
@@ -354,40 +359,37 @@ public:
         float SPEED;
         float PDOP;
         float HDOP;
-        char LTTD[20] = "0000.0000";
-        char LNGTD[20] = "0000.0000";
+        double Latitude, longitude;
         char LTTDIR[5] = "N";
         char LNGTDIR[5] = "E";
         char DELDIST[10];
         double GLAT[3];
         double GLONG[3];
         int Grad[3];
-       int Gkind[3];
-       int Gstatus[3];
+        int Gkind[3];
+        int Gstatus[3];
     } GPSData;
 
     DataStruct();
     void DataStructInit();
-    void _updateGPSData();
 
     void updateGPSData(char *rawbuf);
-    void gpsDataEncode(const char *rawbuf);
     bool checkGeoFence(uint8_t idx);
 
     String GetIvnFrame(uint8_t idx);
     void setIMEI(const char *data);
     uint8_t memoryUsed(uint8_t idx)
     {
-        if(idx == 1)
+        if (idx == 1)
         {
             return ((AISData.Mem1Cnt / 84000) * 100);
         }
-        else{
+        else
+        {
             return ((AISData.Mem2Cnt / 84000) * 100);
         }
         return 0;
     }
-
 };
 
 class LogInPacket
